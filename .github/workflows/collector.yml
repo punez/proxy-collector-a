@@ -24,7 +24,7 @@ jobs:
 
       - name: Fetch Registry
         run: |
-          curl -s https://raw.githubusercontent.com/YOUR_USERNAME/proxy-registry/main/registry.json -o registry.json
+          curl -s https://raw.githubusercontent.com/punez/proxy-registry/main/registry.json -o registry.json
 
       - name: Extract Shard Sources
         run: |
