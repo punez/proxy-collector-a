@@ -32,7 +32,7 @@ jobs:
           echo "Loaded sources:"
           cat sources.txt
 
-      - name: Collect + Smart Decode
+      - name: Collect + Safe Decode
         run: |
           rm -f merged.txt
           touch merged.txt
@@ -41,11 +41,16 @@ jobs:
             [ -z "$url" ] && continue
             echo "Downloading $url"
 
-            content=$(curl -L -s --max-time 15 "$url")
+            content=$(curl -L -s --max-time 15 "$url" || echo "")
 
-            # Try Base64 decode safely
-            decoded=$(echo "$content" | base64 -d 2>/dev/null)
-            if [ $? -ne 0 ]; then
+            if [ -z "$content" ]; then
+              echo "Failed or empty: $url"
+              continue
+            fi
+
+            decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "__DECODE_FAIL__")
+
+            if [ "$decoded" = "__DECODE_FAIL__" ]; then
               decoded="$content"
             fi
 
@@ -59,7 +64,6 @@ jobs:
           grep -E '^(vmess|vless|trojan|ss|ssr|hy2|tuic)://' merged.txt > extracted.txt || true
           sort -u extracted.txt -o extracted.txt
 
-          # HARD LIMIT FOR STABILITY
           head -n 3000 extracted.txt > limited.txt
           mv limited.txt extracted.txt
 
