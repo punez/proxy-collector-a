@@ -11,6 +11,7 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -23,7 +24,7 @@ jobs:
 
       - name: Fetch Registry
         run: |
-          curl -s https://raw.githubusercontent.com/punez/proxy-registry/main/registry.json -o registry.json
+          curl -s https://raw.githubusercontent.com/YOUR_USERNAME/proxy-registry/main/registry.json -o registry.json
 
       - name: Extract Shard Sources
         run: |
@@ -31,7 +32,7 @@ jobs:
           echo "Loaded sources:"
           cat sources.txt
 
-      - name: Collect + Decode + Extract
+      - name: Collect + Smart Decode
         run: |
           rm -f merged.txt
           touch merged.txt
@@ -42,25 +43,35 @@ jobs:
 
             content=$(curl -L -s --max-time 15 "$url")
 
-            # Try Base64 decode
-            decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "$content")
+            # Try Base64 decode safely
+            decoded=$(echo "$content" | base64 -d 2>/dev/null)
+            if [ $? -ne 0 ]; then
+              decoded="$content"
+            fi
 
             echo "$decoded" >> merged.txt
             echo "" >> merged.txt
 
           done < sources.txt
 
-      - name: Extract Valid Config Lines
+      - name: Extract Valid Protocol Lines
         run: |
           grep -E '^(vmess|vless|trojan|ss|ssr|hy2|tuic)://' merged.txt > extracted.txt || true
           sort -u extracted.txt -o extracted.txt
+
+          # HARD LIMIT FOR STABILITY
+          head -n 3000 extracted.txt > limited.txt
+          mv limited.txt extracted.txt
+
+          echo "Total extracted (limited):"
+          wc -l extracted.txt
 
       - name: TCP + Latency Test
         run: |
           rm -f alive.txt
           touch alive.txt
 
-          cat extracted.txt | xargs -I {} -P 50 bash -c '
+          cat extracted.txt | xargs -I {} -P 40 bash -c '
             line="{}"
             hp=$(echo "$line" | grep -oE "[a-zA-Z0-9\.-]+:[0-9]+" | head -n1)
 
@@ -77,6 +88,9 @@ jobs:
               fi
             fi
           ' || true
+
+          echo "Alive count:"
+          wc -l alive.txt
 
       - name: Sort by Latency
         run: |
