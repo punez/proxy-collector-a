@@ -1,0 +1,91 @@
+name: Proxy Collector A
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install tools
+        run: |
+          sudo apt update
+          sudo apt install -y curl jq coreutils netcat-openbsd
+
+      - name: Fetch Registry
+        run: |
+          curl -s https://raw.githubusercontent.com/punez/proxy-registry/main/registry.json -o registry.json
+
+      - name: Extract Shard Sources
+        run: |
+          jq -r '.shards["collector-a"][]' registry.json > sources.txt
+          echo "Loaded sources:"
+          cat sources.txt
+
+      - name: Collect + Decode + Extract
+        run: |
+          rm -f merged.txt
+          touch merged.txt
+
+          while read url; do
+            [ -z "$url" ] && continue
+            echo "Downloading $url"
+
+            content=$(curl -L -s --max-time 15 "$url")
+
+            # Try Base64 decode
+            decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "$content")
+
+            echo "$decoded" >> merged.txt
+            echo "" >> merged.txt
+
+          done < sources.txt
+
+      - name: Extract Valid Config Lines
+        run: |
+          grep -E '^(vmess|vless|trojan|ss|ssr|hy2|tuic)://' merged.txt > extracted.txt || true
+          sort -u extracted.txt -o extracted.txt
+
+      - name: TCP + Latency Test
+        run: |
+          rm -f alive.txt
+          touch alive.txt
+
+          cat extracted.txt | xargs -I {} -P 50 bash -c '
+            line="{}"
+            hp=$(echo "$line" | grep -oE "[a-zA-Z0-9\.-]+:[0-9]+" | head -n1)
+
+            if [ -n "$hp" ]; then
+              host=$(echo $hp | cut -d":" -f1)
+              port=$(echo $hp | cut -d":" -f2)
+
+              start=$(date +%s%3N)
+              timeout 4 nc -z $host $port 2>/dev/null
+              if [ $? -eq 0 ]; then
+                end=$(date +%s%3N)
+                latency=$((end - start))
+                echo "${line}#${latency}ms|collector-a" >> alive.txt
+              fi
+            fi
+          ' || true
+
+      - name: Sort by Latency
+        run: |
+          sort -t '#' -k2 -n alive.txt -o alive.txt
+
+      - name: Commit Results
+        run: |
+          git config --global user.name "collector-a-bot"
+          git config --global user.email "bot@github.com"
+          git add alive.txt
+          git commit -m "update alive list" || echo "No changes"
+          git push || true
