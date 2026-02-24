@@ -1,9 +1,9 @@
-name: Proxy Collector A
+name: Universal Collector A
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 */3 * * *"
+    - cron: "15 */4 * * *"
 
 permissions:
   contents: write
@@ -17,65 +17,70 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install tools
+      - name: Install basic tools
         run: |
           sudo apt update
-          sudo apt install -y curl jq coreutils netcat-openbsd
+          sudo apt install -y curl jq netcat-openbsd
 
       - name: Fetch Registry
         run: |
           curl -s https://raw.githubusercontent.com/punez/proxy-registry/main/registry.json -o registry.json
 
-      - name: Extract Shard Sources
+      - name: Extract Sources
         run: |
           jq -r '.shards["collector-a"][]' registry.json > sources.txt
-          echo "Loaded sources:"
+          echo "Sources loaded:"
           cat sources.txt
 
-      - name: Collect + Safe Decode
+      - name: Collect Everything
         run: |
-          rm -f merged.txt
-          touch merged.txt
+          rm -f merged_raw.txt
+          touch merged_raw.txt
 
           while read url; do
             [ -z "$url" ] && continue
             echo "Downloading $url"
 
-            content=$(curl -L -s --max-time 15 "$url" || echo "")
+            content=$(curl -L -s --max-time 20 "$url" || echo "")
 
-            if [ -z "$content" ]; then
-              echo "Failed or empty: $url"
-              continue
+            [ -z "$content" ] && continue
+
+            # original
+            echo "$content" >> merged_raw.txt
+            echo "" >> merged_raw.txt
+
+            # try base64 decode once
+            decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "")
+            if [ -n "$decoded" ]; then
+              echo "$decoded" >> merged_raw.txt
+              echo "" >> merged_raw.txt
             fi
-
-            decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "__DECODE_FAIL__")
-
-            if [ "$decoded" = "__DECODE_FAIL__" ]; then
-              decoded="$content"
-            fi
-
-            echo "$decoded" >> merged.txt
-            echo "" >> merged.txt
 
           done < sources.txt
 
-      - name: Extract Valid Protocol Lines
+      - name: Extract All Possible Links
         run: |
-          grep -E '^(vmess|vless|trojan|ss|ssr|hy2|tuic)://' merged.txt > extracted.txt || true
+          rm -f extracted.txt
+          touch extracted.txt
+
+          # direct protocol lines
+          grep -aEo '(vmess|vless|trojan|ss|ssr|hy2|tuic)://[^"]+' merged_raw.txt >> extracted.txt || true
+
+          # try to pull strings from JSON
+          jq -r '..|strings?' merged_raw.txt 2>/dev/null | \
+          grep -aE '(vmess|vless|trojan|ss|ssr|hy2|tuic)://' >> extracted.txt || true
+
           sort -u extracted.txt -o extracted.txt
 
-          head -n 3000 extracted.txt > limited.txt
-          mv limited.txt extracted.txt
-
-          echo "Total extracted (limited):"
+          echo "Total extracted:"
           wc -l extracted.txt
 
-      - name: TCP + Latency Test
+      - name: TCP Alive Test (Simple)
         run: |
           rm -f alive.txt
           touch alive.txt
 
-          cat extracted.txt | xargs -I {} -P 40 bash -c '
+          cat extracted.txt | xargs -I {} -P 50 bash -c '
             line="{}"
             hp=$(echo "$line" | grep -oE "[a-zA-Z0-9\.-]+:[0-9]+" | head -n1)
 
@@ -83,24 +88,19 @@ jobs:
               host=$(echo $hp | cut -d":" -f1)
               port=$(echo $hp | cut -d":" -f2)
 
-              start=$(date +%s%3N)
-              timeout 4 nc -z $host $port 2>/dev/null
+              timeout 3 nc -z $host $port 2>/dev/null
               if [ $? -eq 0 ]; then
-                end=$(date +%s%3N)
-                latency=$((end - start))
-                echo "${line}#${latency}ms|collector-a" >> alive.txt
+                echo "$line" >> alive.txt
               fi
             fi
           ' || true
 
+          sort -u alive.txt -o alive.txt
+
           echo "Alive count:"
           wc -l alive.txt
 
-      - name: Sort by Latency
-        run: |
-          sort -t '#' -k2 -n alive.txt -o alive.txt
-
-      - name: Commit Results
+      - name: Commit Alive
         run: |
           git config --global user.name "collector-a-bot"
           git config --global user.email "bot@github.com"
